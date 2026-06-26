@@ -52,6 +52,13 @@ st.markdown("""
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
+        .control-panel-container {
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            padding: 1.5rem;
+            border-radius: 1rem;
+            margin-bottom: 1.5rem;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -118,8 +125,38 @@ def fetch_gemini_api(payload, api_key):
             delay *= 2
     return None
 
-def fetch_archetypes_from_ai(job_title, industry, api_key):
-    """Queries Gemini to construct structured, context-rich lead profiles."""
+def fetch_openai_api(payload, api_key):
+    """Executes calls to the OpenAI ChatGPT API with custom exponential backoff."""
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    import time
+    delay = 1.0
+    retries = 5
+    
+    for i in range(retries):
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            if response.status_code == 200:
+                return response.json()
+            if response.status_code in [429, 500, 503]:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            st.error(f"OpenAI API returned status code {response.status_code}")
+            return None
+        except Exception as e:
+            if i == retries - 1:
+                st.error(f"OpenAI Connection Failed: {str(e)}")
+                return None
+            time.sleep(delay)
+            delay *= 2
+    return None
+
+def fetch_archetypes_from_ai(job_title, industry, gemini_key, openai_key):
+    """Queries Gemini or OpenAI to construct structured, context-rich lead profiles."""
     system_prompt = "You are a professional B2B lead generation researcher. Generate target profiles matching the requested role and industry with deep detail."
     user_prompt = f"""
     Generate 10 highly realistic, highly detailed archetype profiles for the role of "{job_title}" in the "{industry}" industry.
@@ -139,50 +176,71 @@ def fetch_archetypes_from_ai(job_title, industry, api_key):
     Each bioPattern should be professional and relevant. Return absolutely raw, clean, parsed JSON matching the schema exactly. Do not wrap in markdown or backticks.
     """
     
-    payload = {
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": {
-                "type": "OBJECT",
-                "properties": {
-                    "archetypes": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "subTitle": {"type": "STRING"},
-                                "exampleCompany": {"type": "STRING"},
-                                "targetDomain": {"type": "STRING"},
-                                "skills": {"type": "ARRAY", "items": {"type": "STRING"}},
-                                "bioPattern": {"type": "STRING"},
-                                "estimatedSeniorityScore": {"type": "INTEGER"}
-                            },
-                            "required": ["subTitle", "exampleCompany", "targetDomain", "skills", "bioPattern", "estimatedSeniorityScore"]
+    # CASE 1: Gemini API
+    if gemini_key:
+        payload = {
+            "contents": [{"parts": [{"text": user_prompt}]}],
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "archetypes": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "subTitle": {"type": "STRING"},
+                                    "exampleCompany": {"type": "STRING"},
+                                    "targetDomain": {"type": "STRING"},
+                                    "skills": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                    "bioPattern": {"type": "STRING"},
+                                    "estimatedSeniorityScore": {"type": "INTEGER"}
+                                },
+                                "required": ["subTitle", "exampleCompany", "targetDomain", "skills", "bioPattern", "estimatedSeniorityScore"]
+                            }
                         }
-                    }
-                },
-                "required": ["archetypes"]
+                    },
+                    "required": ["archetypes"]
+                }
             }
         }
-    }
-    
-    result = fetch_gemini_api(payload, api_key)
-    if result:
-        try:
-            text_response = result['candidates'][0]['content']['parts'][0]['text']
-            return json.loads(text_response)
-        except Exception as e:
-            st.warning("Failed to parse AI structure. Using fallback generation...")
-            return None
+        result = fetch_gemini_api(payload, gemini_key)
+        if result:
+            try:
+                text_response = result['candidates'][0]['content']['parts'][0]['text']
+                return json.loads(text_response)
+            except Exception as e:
+                st.warning("Failed to parse Gemini structure. Using fallback generation...")
+                return None
+                
+    # CASE 2: OpenAI API
+    elif openai_key:
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "response_format": { "type": "json_object" }
+        }
+        result = fetch_openai_api(payload, openai_key)
+        if result:
+            try:
+                text_response = result['choices'][0]['message']['content']
+                return json.loads(text_response)
+            except Exception as e:
+                st.warning("Failed to parse OpenAI structure. Using fallback generation...")
+                return None
+                
     return None
 
 # ==========================================
 # PROCEDURAL SCENARIOS (FALLBACK GENERATOR)
 # ==========================================
 def generate_fallback_archetypes(job_title, industry):
-    """Provides high-quality mock target structures if API key is not active."""
+    """Provides high-quality mock target structures if no API keys are active."""
     sub_titles = [
         f"Lead {job_title}", f"Director of {job_title}", f"Principal {job_title}", 
         f"Senior {job_title}", f"{job_title} Lead", f"Staff {job_title}", 
@@ -262,15 +320,15 @@ def compile_prospects(archetypes_list, target_count, job_title, industry):
     return pd.DataFrame(data)
 
 # ==========================================
-# OUTSIDE OUTREACH COMPILATION (GEMINI)
+# OUTSIDE OUTREACH COMPILATION (GEMINI / OPENAI)
 # ==========================================
-def generate_pitch(lead_row, api_key, style_choice, custom_instructions=""):
-    """Leverages Gemini to write personalized outbound material in various styles."""
+def generate_pitch(lead_row, gemini_key, openai_key, style_choice, custom_instructions=""):
+    """Leverages Gemini or OpenAI to write personalized outbound material in various styles."""
     
     # Establish local templates if no API key is specified
-    if not api_key:
+    if not gemini_key and not openai_key:
         if "LinkedIn" in style_choice:
-            return f"Hi {lead_row['Full Name'].split(' ')[0]}, enjoyed your work as {lead_row['Job Title']} at {lead_row['Company']}. Would love to connect regarding optimization trends in the {lead_row['Location']} space. Best!"
+            return f"Hi {lead_row['Full Name'].split(' ')[0]},\n\nEnjoyed your work as {lead_row['Job Title']} at {lead_row['Company']}. Would love to connect regarding optimization trends in the {lead_row['Location']} space.\n\nBest!"
         elif "PAS" in style_choice:
             return f"Subject: Optimization roadmap for {lead_row['Company']}\n\nHi {lead_row['Full Name'].split(' ')[0]},\n\n[Problem] Scaling operational performance in B2B is highly unpredictable.\n\n[Agitate] Relying on old databases wastes your team's budget and target bandwidth.\n\n[Solve] We build pipelines for {lead_row['Job Title']}s looking to optimize {lead_row['Skills']}.\n\nLet's coordinate a call this week?"
         else:
@@ -299,18 +357,36 @@ def generate_pitch(lead_row, api_key, style_choice, custom_instructions=""):
     Outreach Style Directive: {style_guidelines}
     """
     
-    payload = {
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]}
-    }
-    
-    result = fetch_gemini_api(payload, api_key)
-    if result:
-        try:
-            return result['candidates'][0]['content']['parts'][0]['text']
-        except:
-            pass
-    return "Error generating pitch with Gemini API."
+    # If Gemini key is preferred
+    if gemini_key:
+        payload = {
+            "contents": [{"parts": [{"text": user_prompt}]}],
+            "systemInstruction": {"parts": [{"text": system_prompt}]}
+        }
+        result = fetch_gemini_api(payload, gemini_key)
+        if result:
+            try:
+                return result['candidates'][0]['content']['parts'][0]['text']
+            except:
+                pass
+                
+    # Else fallback to OpenAI key if available
+    elif openai_key:
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
+        result = fetch_openai_api(payload, openai_key)
+        if result:
+            try:
+                return result['choices'][0]['message']['content']
+            except:
+                pass
+                
+    return "Error generating pitch with API."
 
 # ==========================================
 # STREAMLIT INTERACTIVE SIDEBAR
@@ -322,51 +398,29 @@ with st.sidebar:
     st.info(
         "💡 **How this works:** This application functions in two distinct modes:\n\n"
         "1. **Simulated Sandbox Mode (No Key Needed):** Completely operational out-of-the-box. Generates highly realistic lead lists and messaging templates utilizing our high-fidelity procedural simulation engine.\n\n"
-        "2. **Live Premium AI Mode:** Connecting your personal Google Gemini API key unlocks context-aware live AI generation. **Using your own key completely bypasses shared public tier rate-limiting (preventing 503 Overloads or 429 Quotas).**"
+        "2. **Live Premium AI Mode:** Connecting your personal Google Gemini or OpenAI API key unlocks context-aware live AI generation. **Using your own key completely bypasses shared public tier rate-limiting (preventing 503 Overloads or 429 Quotas).**"
     )
     
-    # Secure API Key Box
-    api_key = st.text_input(
+    # Gemini API Key Box
+    gemini_key = st.text_input(
         "Enter Gemini API Key", 
         type="password", 
         placeholder="AIzaSy...",
         help="Paste a key from Google AI Studio. Your key is processed entirely client-side and remains secure."
     )
     
-    if api_key:
+    # OpenAI API Key Box
+    openai_key = st.text_input(
+        "Enter ChatGPT (OpenAI) API Key", 
+        type="password", 
+        placeholder="sk-proj-...",
+        help="Paste a key from OpenAI Platform. Your key is processed entirely client-side and remains secure."
+    )
+    
+    if gemini_key or openai_key:
         st.success("✅ Live Premium AI Mode Engaged")
     else:
         st.warning("⚠️ Running in Local Simulated Mode")
-        
-    st.write("---")
-    
-    # Configuration Forms
-    st.markdown("##### Target Prospect Rules")
-    
-    # Scenario Presets
-    scenario = st.selectbox(
-        "Choose a Preset Scenario", 
-        ["Custom Input", "Product Manager @ SaaS", "Chief Medical Officer @ Digital Health", "VP of Sales @ Fintech", "Director of Logistics @ Supply Chain"]
-    )
-    
-    # Autofill matching logic
-    default_job = ""
-    default_industry = ""
-    if scenario == "Product Manager @ SaaS":
-        default_job, default_industry = "Product Manager", "SaaS"
-    elif scenario == "Chief Medical Officer @ Digital Health":
-        default_job, default_industry = "Chief Medical Officer", "Digital Health"
-    elif scenario == "VP of Sales @ Fintech":
-        default_job, default_industry = "VP of Sales", "Fintech"
-    elif scenario == "Director of Logistics @ Supply Chain":
-        default_job, default_industry = "Director of Logistics", "Supply Chain"
-        
-    job_title = st.text_input("Target Job Title", value=default_job, placeholder="e.g. Head of Growth")
-    industry = st.text_input("Target Industry", value=default_industry, placeholder="e.g. FinTech")
-    
-    total_leads = st.slider("Total Leads to Generate", min_value=10, max_value=1000, value=100, step=10)
-    
-    btn_generate = st.button("Generate Prospects Database", type="primary", use_container_width=True)
 
 # ==========================================
 # MAIN APPLICATION INTERACTION & ACTIONS
@@ -376,6 +430,59 @@ with st.sidebar:
 st.markdown('<div class="main-header">LeadCraft <span style="color:#2563eb;">AI</span></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Premium Multi-Tab B2B Lead Engine & Dynamic Outreach Sequence Builder</div>', unsafe_allow_html=True)
 
+# Main Area Target Prospect Rules
+st.markdown('<div class="control-panel-container">', unsafe_allow_html=True)
+st.markdown("### 🎯 Target Prospect Rules")
+
+# Scenario Presets and rules grouped together in columns
+col_setup_preset_title, col_setup_preset_industry, col_setup_divider = st.columns([1, 1, 3])
+
+with col_setup_preset_title:
+    preset_title = st.selectbox(
+        "Preset Job Title", 
+        [
+            "Custom Input", 
+            "Product Manager", 
+            "Chief Medical Officer", 
+            "VP of Sales", 
+            "Director of Logistics", 
+            "Software Engineer", 
+            "Head of Growth", 
+            "Chief Information Security Officer (CISO)"
+        ]
+    )
+
+with col_setup_preset_industry:
+    preset_industry = st.selectbox(
+        "Preset Industry", 
+        [
+            "Custom Input", 
+            "SaaS", 
+            "Digital Health", 
+            "Fintech", 
+            "Supply Chain", 
+            "Cybersecurity", 
+            "AI & Automation", 
+            "E-commerce"
+        ]
+    )
+
+# Autofill matching logic
+default_job = "" if preset_title == "Custom Input" else preset_title
+default_industry = "" if preset_industry == "Custom Input" else preset_industry
+
+# Input overrides & sliders in a separate row
+col_input1, col_input2, col_input3 = st.columns([2, 2, 3])
+with col_input1:
+    job_title = st.text_input("Target Job Title Override", value=default_job, placeholder="e.g. Head of Growth")
+with col_input2:
+    industry = st.text_input("Target Industry Override", value=default_industry, placeholder="e.g. FinTech")
+with col_input3:
+    total_leads = st.slider("Total Leads to Generate", min_value=10, max_value=1000, value=100, step=10)
+
+btn_generate = st.button("Generate Prospects Database", type="primary", use_container_width=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
 # Process generation on click
 if btn_generate:
     if not job_title or not industry:
@@ -383,8 +490,8 @@ if btn_generate:
     else:
         with st.spinner("Connecting to LeadCraft AI Core Engine..."):
             archetypes_data = None
-            if api_key:
-                archetypes_data = fetch_archetypes_from_ai(job_title, industry, api_key)
+            if gemini_key or openai_key:
+                archetypes_data = fetch_archetypes_from_ai(job_title, industry, gemini_key, openai_key)
             
             if not archetypes_data:
                 # Runs high-quality procedural fallback automatically
@@ -456,14 +563,14 @@ if st.session_state.prospects_df is not None:
 
         # Build Interactive Grid
         st.markdown("##### Interactive Record Table")
-        st.caption("Double-click checkboxes under the 'Select' column to configure files before exporting. Columns are fully sortable.")
+        st.caption("Double-click checkboxes under the 'Select' column to configure files before exporting. Click on link column values to visit external professional profiles directly.")
         
         # Display data editor
         edited_filtered_df = st.data_editor(
             filtered_df,
             column_config={
                 "Select": st.column_config.CheckboxColumn("Select", help="Choose row for export.", default=True),
-                "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL"),
+                "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL", display_text="Open Profile ↗"),
                 "Full Name": st.column_config.TextColumn(disabled=True),
                 "Job Title": st.column_config.TextColumn(disabled=True),
                 "Company": st.column_config.TextColumn(disabled=True),
@@ -606,18 +713,19 @@ if st.session_state.prospects_df is not None:
                 btn_compose = st.button("Generate Tailored Sales Pitch", type="primary", use_container_width=True)
                 
                 st.write("")
-                st.info(f"""
+                st.markdown(f"""
                 **Prospect Snapshot:**
                 - **Name**: {lead_row['Full Name']}
                 - **Role**: {lead_row['Job Title']} @ {lead_row['Company']}
                 - **Primary Skills**: {lead_row['Skills']}
+                - **LinkedIn Profile**: [Open Link ↗]({lead_row['LinkedIn URL']})
                 """)
                 
             with col_out_right:
                 st.markdown("##### Step 2: Generated Outreach Copy")
                 if btn_compose:
-                    with st.spinner("Gemini compiling personalized sequences..."):
-                        pitch_text = generate_pitch(lead_row, api_key, style_choice, custom_instructions)
+                    with st.spinner("AI compiling personalized sequences..."):
+                        pitch_text = generate_pitch(lead_row, gemini_key, openai_key, style_choice, custom_instructions)
                         st.text_area("Live Copywriter Output Box", value=pitch_text, height=350)
                         st.success("✨ Personalization complete! Copy this outreach directly into your sales sequencing platform.")
                 else:
@@ -627,14 +735,14 @@ if st.session_state.prospects_df is not None:
 
 else:
     # Landing instructional banner
-    st.info("👈 Set a Target Job Title and Target Industry on the left sidebar to generate your dynamic prospect directory!")
+    st.info("👈 Set your Target Job Title and Target Industry in the control panel at the top to generate your dynamic prospect directory!")
     
     col_info_1, col_info_2 = st.columns(2)
     with col_info_1:
         st.markdown("""
             #### 🚀 How It Works:
-            1. **Configure Parameters**: Give the app any role (e.g., *Head of Sales*) and target market sector.
-            2. **Engage Gemini AI**: The app uses Google's model to outline context-rich company archetypes.
+            1. **Configure Parameters**: Input target job roles and industries directly inside the main control header.
+            2. **Engage Professional API Key**: Use Gemini or OpenAI to construct context-aware personas, eliminating 503 limit blocks.
             3. **Procedural Expansion Engine**: Instantly scales up mock records containing custom email domains, locations, and linked handles.
         """)
     with col_info_2:
@@ -642,5 +750,5 @@ else:
             #### 📊 Integrated Tab Workspaces:
             - **📋 Lead Directory**: Full list of records with adjustable search, experience filters, and checkbox selectors.
             - **📊 Visual Analytics**: Automated charts mapping experience curves and city-wide spreads.
-            - **💌 AI Outreach Agent**: Draft custom connection sequences in diverse frameworks (PAS, Direct Pitch, or Custom prompts).
+            - **💌 AI Outreach Agent**: Draft custom connection sequences in diverse frameworks (PAS, Direct Pitch, or Custom prompts) with easy links to LinkedIn.
         """)
