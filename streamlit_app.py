@@ -53,7 +53,7 @@ st.markdown("""
             letter-spacing: 0.05em;
         }
     </style>
-""", unsafe_allow_index=True)
+""", unsafe_allow_html=True)
 
 # ==========================================
 # CONSTANTS & PROCEDURAL DATABASES
@@ -373,8 +373,8 @@ with st.sidebar:
 # ==========================================
 
 # Main headers
-st.markdown('<div class="main-header">LeadCraft <span style="color:#2563eb;">AI</span></div>', unsafe_allow_index=True)
-st.markdown('<div class="sub-header">Premium Multi-Tab B2B Lead Engine & Dynamic Outreach Sequence Builder</div>', unsafe_allow_index=True)
+st.markdown('<div class="main-header">LeadCraft <span style="color:#2563eb;">AI</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Premium Multi-Tab B2B Lead Engine & Dynamic Outreach Sequence Builder</div>', unsafe_allow_html=True)
 
 # Process generation on click
 if btn_generate:
@@ -527,14 +527,14 @@ if st.session_state.prospects_df is not None:
                     <div class="kpi-value">{len(df_state):,}</div>
                     <div class="kpi-label">Sourced Database Size</div>
                 </div>
-            """, unsafe_allow_index=True)
+            """, unsafe_allow_html=True)
         with col2:
             st.markdown(f"""
                 <div class="kpi-card">
                     <div class="kpi-value" style="color: #2563eb;">{len(selected_rows):,}</div>
                     <div class="kpi-label">Checked for Export</div>
                 </div>
-            """, unsafe_allow_index=True)
+            """, unsafe_allow_html=True)
         with col3:
             avg_score = int(selected_rows["Match Score (%)"].mean()) if len(selected_rows) > 0 else 0
             st.markdown(f"""
@@ -542,7 +542,7 @@ if st.session_state.prospects_df is not None:
                     <div class="kpi-value" style="color: #10b981;">{avg_score}%</div>
                     <div class="kpi-label">Selected Match Quality</div>
                 </div>
-            """, unsafe_allow_index=True)
+            """, unsafe_allow_html=True)
         with col4:
             avg_exp = round(selected_rows["Years of Experience"].mean(), 1) if len(selected_rows) > 0 else 0.0
             st.markdown(f"""
@@ -550,7 +550,7 @@ if st.session_state.prospects_df is not None:
                     <div class="kpi-value" style="color: #f59e0b;">{avg_exp} yrs</div>
                     <div class="kpi-label">Avg Lead Seniority</div>
                 </div>
-            """, unsafe_allow_index=True)
+            """, unsafe_allow_html=True)
 
         st.write("---")
 
