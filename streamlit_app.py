@@ -1,17 +1,14 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import random
 import requests
-import json
 import io
 
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="LeadCraft AI - Premium B2B Lead Engine",
-    page_icon="⚡",
+    page_title="LeadCraft Real-Data B2B Engine",
+    page_icon="🔌",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -59,515 +56,304 @@ st.markdown("""
             border-radius: 1rem;
             margin-bottom: 1.5rem;
         }
+        .warning-card {
+            background-color: #fef2f2;
+            border: 1px solid #fecaca;
+            padding: 1.5rem;
+            border-radius: 1rem;
+            color: #991b1b;
+            margin-bottom: 1.5rem;
+        }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# CONSTANTS & PROCEDURAL DATABASES
-# ==========================================
-FIRST_NAMES = [
-    "James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda", "William", "Elizabeth",
-    "David", "Barbara", "Richard", "Susan", "Joseph", "Jessica", "Thomas", "Sarah", "Charles", "Karen",
-    "Christopher", "Lisa", "Daniel", "Nancy", "Matthew", "Betty", "Anthony", "Sandra", "Mark", "Margaret",
-    "Alexander", "Sophia", "Daniel", "Olivia", "Ethan", "Isabella", "Liam", "Mia", "Noah", "Charlotte",
-    "Oliver", "Amelia", "Lucas", "Harper", "Aiden", "Evelyn", "Elijah", "Abigail", "Benjamin", "Emily"
-]
-
-LAST_NAMES = [
-    "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
-    "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin",
-    "Green", "Adams", "Nelson", "Baker", "Hall", "Rivera", "Campbell", "Mitchell", "Carter", "Roberts",
-    "Gomez", "Phillips", "Evans", "Turner", "Diaz", "Parker", "Cruz", "Edwards", "Collins", "Reyes"
-]
-
-CITIES = [
-    "San Francisco, CA", "New York, NY", "Austin, TX", "Seattle, WA", "Boston, MA", 
-    "Chicago, IL", "Denver, CO", "Atlanta, GA", "Los Angeles, CA", "Miami, FL",
-    "Dallas, TX", "Salt Lake City, UT", "Portland, OR", "San Jose, CA", "San Diego, CA"
-]
-
-# ==========================================
 # SESSION STATE INITIALIZATION
 # ==========================================
-if "prospects_df" not in st.session_state:
-    st.session_state.prospects_df = None
+if "live_prospects_df" not in st.session_state:
+    st.session_state.live_prospects_df = None
 if "active_job_title" not in st.session_state:
     st.session_state.active_job_title = ""
 if "active_industry" not in st.session_state:
     st.session_state.active_industry = ""
 
 # ==========================================
-# API UTILITIES (EXPONENTIAL BACKOFF)
+# 1. LIVE DATA INTEGRATION - APOLLO.IO API
 # ==========================================
-def fetch_gemini_api(payload, api_key):
-    """Executes calls to the Gemini 2.5 Flash API with custom exponential backoff."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={api_key}"
-    import time
-    delay = 1.0
-    retries = 5
-    
-    for i in range(retries):
-        try:
-            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code in [429, 500, 503]:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            st.error(f"Gemini API returned status code {response.status_code}")
-            return None
-        except Exception as e:
-            if i == retries - 1:
-                st.error(f"Connection Failed: {str(e)}")
-                return None
-            time.sleep(delay)
-            delay *= 2
-    return None
-
-def fetch_openai_api(payload, api_key):
-    """Executes calls to the OpenAI ChatGPT API with custom exponential backoff."""
-    url = "https://api.openai.com/v1/chat/completions"
+def fetch_live_apollo_leads(job_title, industry, api_key, limit):
+    """Fetches real-world, verified professional contacts from the Apollo.io API."""
+    url = "https://api.apollo.io/v1/mixed_people/search"
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Cache-Control": "no-cache",
         "Content-Type": "application/json"
     }
-    import time
-    delay = 1.0
-    retries = 5
     
-    for i in range(retries):
-        try:
-            response = requests.post(url, json=payload, headers=headers)
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code in [429, 500, 503]:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            st.error(f"OpenAI API returned status code {response.status_code}")
-            return None
-        except Exception as e:
-            if i == retries - 1:
-                st.error(f"OpenAI Connection Failed: {str(e)}")
-                return None
-            time.sleep(delay)
-            delay *= 2
-    return None
-
-def fetch_archetypes_from_ai(job_title, industry, gemini_key, openai_key):
-    """Queries Gemini or OpenAI to construct structured, context-rich lead profiles."""
-    system_prompt = "You are a professional B2B lead generation researcher. Generate target profiles matching the requested role and industry with deep detail."
-    user_prompt = f"""
-    Generate 10 highly realistic, highly detailed archetype profiles for the role of "{job_title}" in the "{industry}" industry.
-    Format the output as a strict JSON object structure matching this schema:
-    {{
-      "archetypes": [
-        {{
-          "subTitle": "Specific target job variation",
-          "exampleCompany": "Highly realistic company in this industry space",
-          "targetDomain": "companydomain.com",
-          "skills": ["Skill1", "Skill2", "Skill3", "Skill4", "Skill5"],
-          "bioPattern": "A standard professional background bio outline matching this archetype.",
-          "estimatedSeniorityScore": 85
-        }}
-      ]
-    }}
-    Each bioPattern should be professional and relevant. Return absolutely raw, clean, parsed JSON matching the schema exactly. Do not wrap in markdown or backticks.
-    """
-    
-    # CASE 1: Gemini API
-    if gemini_key:
-        payload = {
-            "contents": [{"parts": [{"text": user_prompt}]}],
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseSchema": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "archetypes": {
-                            "type": "ARRAY",
-                            "items": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "subTitle": {"type": "STRING"},
-                                    "exampleCompany": {"type": "STRING"},
-                                    "targetDomain": {"type": "STRING"},
-                                    "skills": {"type": "ARRAY", "items": {"type": "STRING"}},
-                                    "bioPattern": {"type": "STRING"},
-                                    "estimatedSeniorityScore": {"type": "INTEGER"}
-                                },
-                                "required": ["subTitle", "exampleCompany", "targetDomain", "skills", "bioPattern", "estimatedSeniorityScore"]
-                            }
-                        }
-                    },
-                    "required": ["archetypes"]
-                }
-            }
-        }
-        result = fetch_gemini_api(payload, gemini_key)
-        if result:
-            try:
-                text_response = result['candidates'][0]['content']['parts'][0]['text']
-                return json.loads(text_response)
-            except Exception as e:
-                st.warning("Failed to parse Gemini structure. Using fallback generation...")
-                return None
-                
-    # CASE 2: OpenAI API
-    elif openai_key:
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "response_format": { "type": "json_object" }
-        }
-        result = fetch_openai_api(payload, openai_key)
-        if result:
-            try:
-                text_response = result['choices'][0]['message']['content']
-                return json.loads(text_response)
-            except Exception as e:
-                st.warning("Failed to parse OpenAI structure. Using fallback generation...")
-                return None
-                
-    return None
-
-# ==========================================
-# PROCEDURAL SCENARIOS (FALLBACK GENERATOR)
-# ==========================================
-def generate_fallback_archetypes(job_title, industry):
-    """Provides high-quality mock target structures if no API keys are active."""
-    sub_titles = [
-        f"Lead {job_title}", f"Director of {job_title}", f"Principal {job_title}", 
-        f"Senior {job_title}", f"{job_title} Lead", f"Staff {job_title}", 
-        f"Global Head of {job_title}", f"Associate {job_title}"
-    ]
-    companies = [
-        "Enterprise Grid", "Apex Horizons", "Quantum Scale", "Nexis Partners", 
-        "Veridian Core", "Synthetix Labs", "Fortress Alliance", "Stratis Prime"
-    ]
-    domains = ["enterprisegrid.io", "apexhorizons.com", "quantumscale.co", "nexispartners.com"]
-    skills = ["Strategy Planning", "Project Management", "Agile Execution", "SaaS Infrastructure", "Cross-Functional Collaboration", "KPI Tracking"]
-    
-    archetypes = []
-    for i in range(8):
-        archetypes.append({
-            "subTitle": sub_titles[i % len(sub_titles)],
-            "exampleCompany": companies[i % len(companies)],
-            "targetDomain": domains[i % len(domains)],
-            "skills": [skills[x] for x in random.sample(range(len(skills)), 4)],
-            "bioPattern": f"Professional executing strategic leadership initiatives in the {industry} space. Experienced in scaling high-performing cross-functional squads.",
-            "estimatedSeniorityScore": random.randint(70, 98)
-        })
-    return {"archetypes": archetypes}
-
-# ==========================================
-# PROCEDURAL EXPANSION ENGINE
-# ==========================================
-def compile_prospects(archetypes_list, target_count, job_title, industry):
-    """Procedurally expands archetypes up to 1000 highly unique, structured records."""
-    data = []
-    
-    for i in range(target_count):
-        seed = archetypes_list[i % len(archetypes_list)]
+    payload = {
+        "api_key": api_key,
+        "q_person_title_keywords": [job_title] if job_title else [],
+        "per_page": min(limit, 100)
+    }
+    if industry:
+        payload["organization_keywords"] = [industry]
         
-        # Build unique name
-        first = random.choice(FIRST_NAMES)
-        last = random.choice(LAST_NAMES)
-        full_name = f"{first} {last}"
-        
-        # Build geographic distribution
-        loc = random.choice(CITIES)
-        
-        # Dynamic company names & matching domains
-        company = seed["exampleCompany"]
-        domain = seed["targetDomain"]
-        if i >= len(archetypes_list):
-            extra_tags = ["Labs", "Global", "Solutions", "HQ", "Systems", "Group", "Group LLC"]
-            tag = extra_tags[i % len(extra_tags)]
-            company = f"{seed['exampleCompany']} {tag}"
-            domain = f"{seed['exampleCompany'].lower().replace(' ', '')}-{tag.lower()}.com"
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            people_list = data.get("people", [])
             
-        email = f"{first.lower()}.{last.lower()}@{domain}"
-        linkedin = f"https://linkedin.com/in/{first.lower()}-{last.lower()}-{random.randint(1000, 9999)}"
-        
-        experience = random.randint(3, 20)
-        score = min(100, max(45, seed["estimatedSeniorityScore"] + random.randint(-8, 8)))
-        
-        # Randomize skill subset
-        skills_subset = random.sample(seed["skills"], min(len(seed["skills"]), random.randint(3, 5)))
-        
-        bio = seed["bioPattern"].replace("{Name}", full_name).replace("{Company}", company).replace("{Title}", seed["subTitle"])
-        
-        data.append({
-            "Select": True,
-            "Full Name": full_name,
-            "Job Title": seed["subTitle"],
-            "Company": company,
-            "Location": loc,
-            "Email Address": email,
-            "LinkedIn URL": linkedin,
-            "Years of Experience": experience,
-            "Match Score (%)": score,
-            "Skills": ", ".join(skills_subset),
-            "AI Bio Context": bio
-        })
-        
-    return pd.DataFrame(data)
-
-# ==========================================
-# OUTSIDE OUTREACH COMPILATION (GEMINI / OPENAI)
-# ==========================================
-def generate_pitch(lead_row, gemini_key, openai_key, style_choice, custom_instructions=""):
-    """Leverages Gemini or OpenAI to write personalized outbound material in various styles."""
-    
-    # Establish local templates if no API key is specified
-    if not gemini_key and not openai_key:
-        if "LinkedIn" in style_choice:
-            return f"Hi {lead_row['Full Name'].split(' ')[0]},\n\nEnjoyed your work as {lead_row['Job Title']} at {lead_row['Company']}. Would love to connect regarding optimization trends in the {lead_row['Location']} space.\n\nBest!"
-        elif "PAS" in style_choice:
-            return f"Subject: Optimization roadmap for {lead_row['Company']}\n\nHi {lead_row['Full Name'].split(' ')[0]},\n\n[Problem] Scaling operational performance in B2B is highly unpredictable.\n\n[Agitate] Relying on old databases wastes your team's budget and target bandwidth.\n\n[Solve] We build pipelines for {lead_row['Job Title']}s looking to optimize {lead_row['Skills']}.\n\nLet's coordinate a call this week?"
+            records = []
+            for person in people_list:
+                org = person.get("organization", {})
+                location = ", ".join(filter(None, [person.get("city"), person.get("state"), person.get("country")]))
+                
+                records.append({
+                    "Select": True,
+                    "Full Name": person.get("name", "N/A"),
+                    "Job Title": person.get("title", "N/A"),
+                    "Company": org.get("name", "N/A"),
+                    "Location": location if location else "N/A",
+                    "Email Address": person.get("email", "N/A"),
+                    "LinkedIn URL": person.get("linkedin_url", ""),
+                    "Years of Experience": person.get("seniority", "N/A"),
+                    "Data Source": "Apollo.io API"
+                })
+            return pd.DataFrame(records)
         else:
-            return f"Subject: Quick question regarding your role at {lead_row['Company']}\n\nHi {lead_row['Full Name'].split(' ')[0]},\n\nHope this finds you well. I was reviewing the scope of the {lead_row['Job Title']} role at {lead_row['Company']} and wanted to connect concerning custom automation toolings.\n\nLet's synchronize a chat next week?\n\nBest,\nLeadCraft Sales"
-
-    system_prompt = "You are an elite B2B enterprise cold sales representative and outreach copywriter."
-    
-    # Context-aware style guidance
-    style_guidelines = ""
-    if style_choice == "Casual LinkedIn Connection Request (< 300 characters)":
-        style_guidelines = "Create a hyper-short, casual message under 300 characters total fit for a LinkedIn connection invitation. Do not use subject lines or formal signatures."
-    elif style_choice == "Problem-Agitate-Solve (PAS) Email":
-        style_guidelines = "Structure the message strictly around the PAS framework: clearly identify a major job-specific Problem, Agitate the consequences of leaving it unresolved, and present our offer as the ultimate Solution."
-    elif style_choice == "The Direct Meeting Pitch":
-        style_guidelines = "Keep it concise, direct, and focused on proposing a brief 10-minute meeting window. Include a strong call to action."
-    elif style_choice == "Custom Directive Guidance":
-        style_guidelines = f"Adopt this exact tone and layout directive: {custom_instructions}"
-
-    user_prompt = f"""
-    Compose an outreach message from "The LeadCraft Team" targeting {lead_row['Full Name']}, who serves as "{lead_row['Job Title']}" at "{lead_row['Company']}".
-    Key details about the target:
-    - Location: {lead_row['Location']}
-    - Top Skills: {lead_row['Skills']}
-    - Bio background: {lead_row['AI Bio Context']}
-
-    Outreach Style Directive: {style_guidelines}
-    """
-    
-    # If Gemini key is preferred
-    if gemini_key:
-        payload = {
-            "contents": [{"parts": [{"text": user_prompt}]}],
-            "systemInstruction": {"parts": [{"text": system_prompt}]}
-        }
-        result = fetch_gemini_api(payload, gemini_key)
-        if result:
-            try:
-                return result['candidates'][0]['content']['parts'][0]['text']
-            except:
-                pass
-                
-    # Else fallback to OpenAI key if available
-    elif openai_key:
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        }
-        result = fetch_openai_api(payload, openai_key)
-        if result:
-            try:
-                return result['choices'][0]['message']['content']
-            except:
-                pass
-                
-    return "Error generating pitch with API."
+            st.error(f"Apollo API Error: {response.status_code}")
+    except Exception as e:
+        st.error(f"Failed to connect to Apollo: {str(e)}")
+    return pd.DataFrame()
 
 # ==========================================
-# STREAMLIT INTERACTIVE SIDEBAR
+# 2. LIVE DATA INTEGRATION - SERPAPI LINKEDIN X-RAY
+# ==========================================
+def fetch_live_serpapi_linkedin(job_title, industry, api_key, limit):
+    """Uses SerpAPI to execute Google Custom X-Ray searches to parse real LinkedIn profiles."""
+    url = "https://serpapi.com/search"
+    
+    query_parts = ["site:linkedin.com/in/"]
+    if job_title:
+        query_parts.append(f'"{job_title}"')
+    if industry:
+        query_parts.append(f'"{industry}"')
+        
+    query_str = " ".join(query_parts)
+    
+    params = {
+        "engine": "google",
+        "q": query_str,
+        "api_key": api_key,
+        "num": min(limit, 50)
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("organic_results", [])
+            
+            records = []
+            for r in results:
+                title = r.get("title", "")
+                link = r.get("link", "")
+                
+                parts = title.split(" - ")
+                name = parts[0] if len(parts) > 0 else "N/A"
+                role = parts[1] if len(parts) > 1 else job_title
+                company = parts[2].split(" | ")[0] if len(parts) > 2 else industry
+                
+                records.append({
+                    "Select": True,
+                    "Full Name": name,
+                    "Job Title": role,
+                    "Company": company if company else "N/A",
+                    "Location": "N/A (Indexed on Web)",
+                    "Email Address": "Requires Verification",
+                    "LinkedIn URL": link,
+                    "Years of Experience": "N/A",
+                    "Data Source": "SerpAPI LinkedIn X-Ray"
+                })
+            return pd.DataFrame(records)
+        else:
+            st.error(f"SerpAPI Error: {response.status_code}")
+    except Exception as e:
+        st.error(f"Failed to connect to SerpAPI: {str(e)}")
+    return pd.DataFrame()
+
+# ==========================================
+# 3. LIVE DATA INTEGRATION - HUNTER.IO API
+# ==========================================
+def fetch_live_hunter_leads(industry, api_key, limit):
+    """Resolves corporate domains via Clearbit Autocomplete, then pulls actual company directories from Hunter.io."""
+    if not industry:
+        st.error("Hunter.io requires a specific target Company/Industry Name.")
+        return pd.DataFrame()
+        
+    domain = None
+    try:
+        clearbit_url = f"https://autocomplete.clearbit.com/v1/companies/suggest?query={industry}"
+        res = requests.get(clearbit_url)
+        if res.status_code == 200 and res.json():
+            domain = res.json()[0].get("domain")
+    except Exception as e:
+        pass
+        
+    if not domain:
+        st.error(f"Could not automatically resolve a real business domain for: '{industry}'")
+        return pd.DataFrame()
+        
+    url = "https://api.hunter.io/v2/domain-search"
+    params = {
+        "domain": domain,
+        "api_key": api_key,
+        "limit": min(limit, 100)
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json().get("data", {})
+            emails = data.get("emails", [])
+            
+            records = []
+            for email_data in emails:
+                first = email_data.get("first_name", "")
+                last = email_data.get("last_name", "")
+                full_name = f"{first} {last}".strip() if (first or last) else "Corporate Recipient"
+                
+                records.append({
+                    "Select": True,
+                    "Full Name": full_name,
+                    "Job Title": email_data.get("position", "Employee"),
+                    "Company": data.get("organization", industry.capitalize()),
+                    "Location": "N/A (HQ Verified)",
+                    "Email Address": email_data.get("value", ""),
+                    "LinkedIn URL": email_data.get("linkedin", ""),
+                    "Years of Experience": "N/A (Confidence: " + str(email_data.get("confidence", 0)) + "%)",
+                    "Data Source": "Hunter.io Domain Search"
+                })
+            return pd.DataFrame(records)
+        else:
+            st.error(f"Hunter.io Error: {response.status_code}")
+    except Exception as e:
+        st.error(f"Failed to connect to Hunter.io: {str(e)}")
+    return pd.DataFrame()
+
+# ==========================================
+# STREAMLIT SIDEBAR - DIRECTORY KEY CONFIG
 # ==========================================
 with st.sidebar:
-    st.markdown("### 🔑 API Connection Engine")
+    st.markdown("### 🔑 Live B2B API Connections")
+    st.write("Synthetic engines have been removed. This interface maps fields directly to real B2B pipelines.")
     
-    # Informative Box explaining the dual-mode API key setup
-    st.info(
-        "💡 **How this works:** This application functions in two distinct modes:\n\n"
-        "1. **Simulated Sandbox Mode (No Key Needed):** Completely operational out-of-the-box. Generates highly realistic lead lists and messaging templates utilizing our high-fidelity procedural simulation engine.\n\n"
-        "2. **Live Premium AI Mode:** Connecting your personal Google Gemini or OpenAI API key unlocks context-aware live AI generation. **Using your own key completely bypasses shared public tier rate-limiting (preventing 503 Overloads or 429 Quotas).**"
-    )
+    # Preloaded secure user credentials
+    DEFAULT_SERP_KEY = "1f0b0c2a13ccc236001865b2734efcd6ed07f6e776b6427b70c9afb14eb0e1fe"
     
-    # Gemini API Key Box
-    gemini_key = st.text_input(
-        "Enter Gemini API Key", 
+    apollo_key = st.text_input("Apollo.io API Key", type="password", placeholder="e.g. apikey_123...")
+    
+    serpapi_key = st.text_input(
+        "SerpAPI Key (LinkedIn Crawl)", 
         type="password", 
-        placeholder="AIzaSy...",
-        help="Paste a key from Google AI Studio. Your key is processed entirely client-side and remains secure."
+        value=DEFAULT_SERP_KEY,
+        help="System has initialized with your provided private connection string."
     )
     
-    # OpenAI API Key Box
-    openai_key = st.text_input(
-        "Enter ChatGPT (OpenAI) API Key", 
-        type="password", 
-        placeholder="sk-proj-...",
-        help="Paste a key from OpenAI Platform. Your key is processed entirely client-side and remains secure."
-    )
+    hunter_key = st.text_input("Hunter.io API Key", type="password", placeholder="e.g. abcd1234...")
     
-    if gemini_key or openai_key:
-        st.success("✅ Live Premium AI Mode Engaged")
-    else:
-        st.warning("⚠️ Running in Local Simulated Mode")
+    st.write("---")
+    if serpapi_key or apollo_key or hunter_key:
+        st.success("✅ Live Direct API Pipeline Engaged")
 
 # ==========================================
-# MAIN APPLICATION INTERACTION & ACTIONS
+# MAIN WORKSPACE HEADER
 # ==========================================
+st.markdown('<div class="main-header">LeadCraft <span style="color:#2563eb;">AI</span> Live</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">B2B Directory Integrator — Real Contact Records Only</div>', unsafe_allow_html=True)
 
-# Main headers
-st.markdown('<div class="main-header">LeadCraft <span style="color:#2563eb;">AI</span></div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Premium Multi-Tab B2B Lead Engine & Dynamic Outreach Sequence Builder</div>', unsafe_allow_html=True)
-
-# Main Area Target Prospect Rules
+# Control Center
 st.markdown('<div class="control-panel-container">', unsafe_allow_html=True)
-st.markdown("### 🎯 Target Prospect Rules")
+st.markdown("### 🔍 Live B2B Search Criteria")
 
-# Scenario Presets and rules grouped together in columns
-col_setup_preset_title, col_setup_preset_industry, col_setup_divider = st.columns([1, 1, 3])
+col_search_1, col_search_2, col_search_3 = st.columns([2, 2, 1])
+with col_search_1:
+    job_title = st.text_input("Target Job Title", value="", placeholder="e.g. VP of Security, Software Architect")
+with col_search_2:
+    industry = st.text_input("Target Company / Industry", value="", placeholder="e.g. Stripe, Biotech, Fintech")
+with col_search_3:
+    # Default set exactly to 10 as requested
+    total_leads = st.slider("Result Limit", min_value=5, max_value=100, value=10, step=5)
 
-with col_setup_preset_title:
-    preset_title = st.selectbox(
-        "Preset Job Title", 
-        [
-            "Custom Input", 
-            "Product Manager", 
-            "Chief Medical Officer", 
-            "VP of Sales", 
-            "Director of Logistics", 
-            "Software Engineer", 
-            "Head of Growth", 
-            "Chief Information Security Officer (CISO)"
-        ]
-    )
+# Selection of query route
+active_pipelines = []
+if apollo_key: active_pipelines.append("Apollo.io Live Database Search")
+if serpapi_key: active_pipelines.append("SerpAPI Google LinkedIn X-Ray")
+if hunter_key: active_pipelines.append("Hunter.io Corporate Domain Directory")
 
-with col_setup_preset_industry:
-    preset_industry = st.selectbox(
-        "Preset Industry", 
-        [
-            "Custom Input", 
-            "SaaS", 
-            "Digital Health", 
-            "Fintech", 
-            "Supply Chain", 
-            "Cybersecurity", 
-            "AI & Automation", 
-            "E-commerce"
-        ]
-    )
+# Auto-set index based on presence of pre-loaded key
+default_index = 0 if "SerpAPI Google LinkedIn X-Ray" in active_pipelines else 0
 
-# Autofill matching logic
-default_job = "" if preset_title == "Custom Input" else preset_title
-default_industry = "" if preset_industry == "Custom Input" else preset_industry
+selected_pipeline = st.selectbox(
+    "Active Data Routing Pipeline", 
+    active_pipelines if active_pipelines else ["Pipeline Inactive"],
+    index=default_index
+)
 
-# Input overrides & sliders in a separate row
-col_input1, col_input2, col_input3 = st.columns([2, 2, 3])
-with col_input1:
-    job_title = st.text_input("Target Job Title Override", value=default_job, placeholder="e.g. Head of Growth")
-with col_input2:
-    industry = st.text_input("Target Industry Override", value=default_industry, placeholder="e.g. FinTech")
-with col_input3:
-    total_leads = st.slider("Total Leads to Generate", min_value=10, max_value=1000, value=100, step=10)
-
-btn_generate = st.button("Generate Prospects Database", type="primary", use_container_width=True)
+btn_query = st.button("Search Real-World Directory", type="primary", use_container_width=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Process generation on click
-if btn_generate:
-    if not job_title or not industry:
-        st.error("Please provide both a Target Job Title and Target Industry to generate records.")
+# Processing actual external requests
+if btn_query:
+    if not job_title and not industry:
+        st.error("Please insert a Job Title or Target Company/Industry to specify search variables.")
     else:
-        with st.spinner("Connecting to LeadCraft AI Core Engine..."):
-            archetypes_data = None
-            if gemini_key or openai_key:
-                archetypes_data = fetch_archetypes_from_ai(job_title, industry, gemini_key, openai_key)
+        with st.spinner(f"Contacting {selected_pipeline} to request real profiles..."):
+            df = pd.DataFrame()
             
-            if not archetypes_data:
-                # Runs high-quality procedural fallback automatically
-                archetypes_data = generate_fallback_archetypes(job_title, industry)
+            if selected_pipeline == "Apollo.io Live Database Search":
+                df = fetch_live_apollo_leads(job_title, industry, apollo_key, total_leads)
+            elif selected_pipeline == "SerpAPI Google LinkedIn X-Ray":
+                df = fetch_live_serpapi_linkedin(job_title, industry, serpapi_key, total_leads)
+            elif selected_pipeline == "Hunter.io Corporate Domain Directory":
+                df = fetch_live_hunter_leads(industry, hunter_key, total_leads)
                 
-            # Procedural compilation scaling to desired amount
-            df = compile_prospects(archetypes_data["archetypes"], total_leads, job_title, industry)
-            
-            # Save into streamlit page state
-            st.session_state.prospects_df = df
-            st.session_state.active_job_title = job_title
-            st.session_state.active_industry = industry
-            st.toast(f"Successfully compiled {total_leads} premium targets!", icon="🚀")
+            if not df.empty:
+                st.session_state.live_prospects_df = df
+                st.session_state.active_job_title = job_title
+                st.session_state.active_industry = industry
+                st.toast(f"Retrieved {len(df)} authentic profiles successfully!", icon="🔥")
+            else:
+                st.warning("Query executed, but no real-world records matched the criteria.")
 
-# Check if database has been populated
-if st.session_state.prospects_df is not None:
-    df_state = st.session_state.prospects_df
+# ==========================================
+# DYNAMIC DATA FRAME RESULTS WORKSPACE
+# ==========================================
+if st.session_state.live_prospects_df is not None:
+    df_state = st.session_state.live_prospects_df
     
-    # CREATE TABS WORKSPACE
-    tab_directory, tab_analytics, tab_outreach = st.tabs([
-        "📋 Lead Directory", 
-        "📊 Market & Visual Analytics", 
-        "💌 AI Outreach Agent"
+    tab_directory, tab_analytics = st.tabs([
+        "📋 Verified Live Directory", 
+        "📊 Dynamic Query Insights"
     ])
     
-    # ----------------------------------------------------
-    # TAB 1: LEAD DIRECTORY (WITH INTEGRATED FILTERING)
-    # ----------------------------------------------------
     with tab_directory:
-        # Collapsible filtering drawer panel
-        with st.expander("🔍 Advanced Database Filters", expanded=False):
-            col_filt_1, col_filt_2, col_filt_3 = st.columns(3)
-            with col_filt_1:
-                min_match_score = st.slider("Minimum Match Score (%)", 0, 100, 50)
-            with col_filt_2:
-                min_experience = st.slider("Minimum Years of Experience", 0, 20, 0)
-            with col_filt_3:
-                unique_locations = sorted(df_state["Location"].unique().tolist())
-                selected_locations = st.multiselect("Filter by Locations", unique_locations, default=unique_locations)
-
-        # Applying multi-filters in real time
-        filtered_df = df_state.copy()
-        filtered_df = filtered_df[
-            (filtered_df["Match Score (%)"] >= min_match_score) &
-            (filtered_df["Years of Experience"] >= min_experience) &
-            (filtered_df["Location"].isin(selected_locations))
-        ]
-
-        # Bulk selection controls
         col_sel_1, col_sel_2, _ = st.columns([1.5, 1.5, 7])
         with col_sel_1:
-            if st.button("Select All Visible", use_container_width=True):
-                # Update only the visible filtered rows to True
-                df_state.set_index("Email Address", drop=False, inplace=True)
-                filtered_df["Select"] = True
-                df_state.update(filtered_df)
-                df_state.reset_index(drop=True, inplace=True)
-                st.session_state.prospects_df = df_state
+            if st.button("Select All", use_container_width=True):
+                df_state["Select"] = True
+                st.session_state.live_prospects_df = df_state
                 st.rerun()
         with col_sel_2:
-            if st.button("Clear All Visible", use_container_width=True):
-                # Update only the visible filtered rows to False
-                df_state.set_index("Email Address", drop=False, inplace=True)
-                filtered_df["Select"] = False
-                df_state.update(filtered_df)
-                df_state.reset_index(drop=True, inplace=True)
-                st.session_state.prospects_df = df_state
+            if st.button("Unselect All", use_container_width=True):
+                df_state["Select"] = False
+                st.session_state.live_prospects_df = df_state
                 st.rerun()
 
-        # Build Interactive Grid
-        st.markdown("##### Interactive Record Table")
-        st.caption("Double-click checkboxes under the 'Select' column to configure files before exporting. Click on link column values to visit external professional profiles directly.")
+        st.markdown("##### Real-World Search Results Grid")
+        st.caption("Active rows are direct API outputs. Selected entries will write to your Excel export sheet.")
         
-        # Display data editor
-        edited_filtered_df = st.data_editor(
-            filtered_df,
+        edited_df = st.data_editor(
+            df_state,
             column_config={
                 "Select": st.column_config.CheckboxColumn("Select", help="Choose row for export.", default=True),
                 "LinkedIn URL": st.column_config.LinkColumn("LinkedIn URL", display_text="Open Profile ↗"),
@@ -576,179 +362,57 @@ if st.session_state.prospects_df is not None:
                 "Company": st.column_config.TextColumn(disabled=True),
                 "Location": st.column_config.TextColumn(disabled=True),
                 "Email Address": st.column_config.TextColumn(disabled=True),
-                "Years of Experience": st.column_config.NumberColumn(disabled=True),
-                "Match Score (%)": st.column_config.NumberColumn(disabled=True),
-                "Skills": st.column_config.TextColumn(disabled=True),
-                "AI Bio Context": st.column_config.TextColumn(disabled=True)
+                "Years of Experience": st.column_config.TextColumn(disabled=True),
+                "Data Source": st.column_config.TextColumn(disabled=True)
             },
             use_container_width=True,
             hide_index=True,
-            key="prospect_editor"
+            key="real_data_editor"
         )
+        
+        st.session_state.live_prospects_df = edited_df
+        selected_rows = edited_df[edited_df["Select"] == True]
 
-        # Merge updates back to Master DataFrame State safely using email address index
-        df_state.set_index("Email Address", drop=False, inplace=True)
-        edited_filtered_df.set_index("Email Address", drop=False, inplace=True)
-        df_state.update(edited_filtered_df)
-        df_state.reset_index(drop=True, inplace=True)
-        st.session_state.prospects_df = df_state
-
-        # Collect Selected rows globally
-        selected_rows = df_state[df_state["Select"] == True]
-
-        # Excel Compiler Downloader
         st.markdown("---")
-        st.markdown("##### Download Export Batch")
-        st.write("Click below to compile all checked profiles globally into a downloadable, pre-formatted native Excel file.")
+        st.markdown("##### 💾 Excel Exporter")
         
         if len(selected_rows) > 0:
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 export_cleaned_df = selected_rows.drop(columns=["Select"])
-                export_cleaned_df.to_excel(writer, index=False, sheet_name="Target Prospects")
+                export_cleaned_df.to_excel(writer, index=False, sheet_name="Live B2B Contacts")
                 
             excel_data = buffer.getvalue()
-            target_file_title = f"Prospects_{st.session_state.active_job_title.replace(' ', '_')}_{st.session_state.active_industry.replace(' ', '_')}.xlsx"
+            target_file_title = f"Live_Prospects_{st.session_state.active_job_title.replace(' ', '_')}_{st.session_state.active_industry.replace(' ', '_')}.xlsx"
             
             st.download_button(
-                label=f"📥 Download {len(selected_rows)} Selected Prospects as Excel",
+                label=f"📥 Download {len(selected_rows)} Verified Leads in Excel",
                 data=excel_data,
                 file_name=target_file_title,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
         else:
-            st.warning("Please check/select at least one prospect to activate the Excel downloader.")
+            st.warning("Please check/select at least one verified prospect to download.")
 
-    # ----------------------------------------------------
-    # TAB 2: MARKET & VISUAL ANALYTICS
-    # ----------------------------------------------------
     with tab_analytics:
-        st.markdown("#### 📊 Dynamic Market Segment Insights")
-        st.write("Real-time demographic and performance distribution data compiled for the active list.")
-        
-        col1, col2, col3, col4 = st.columns(4)
+        st.markdown("#### 📊 Geographic and Source Demographics")
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown(f"""
-                <div class="kpi-card">
-                    <div class="kpi-value">{len(df_state):,}</div>
-                    <div class="kpi-label">Sourced Database Size</div>
-                </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-card"><div class="kpi-value">{len(df_state):,}</div><div class="kpi-label">Profiles Fetched</div></div>', unsafe_allow_html=True)
         with col2:
-            st.markdown(f"""
-                <div class="kpi-card">
-                    <div class="kpi-value" style="color: #2563eb;">{len(selected_rows):,}</div>
-                    <div class="kpi-label">Checked for Export</div>
-                </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-card"><div class="kpi-value" style="color: #2563eb;">{len(selected_rows):,}</div><div class="kpi-label">Checked Profiles</div></div>', unsafe_allow_html=True)
         with col3:
-            avg_score = int(selected_rows["Match Score (%)"].mean()) if len(selected_rows) > 0 else 0
-            st.markdown(f"""
-                <div class="kpi-card">
-                    <div class="kpi-value" style="color: #10b981;">{avg_score}%</div>
-                    <div class="kpi-label">Selected Match Quality</div>
-                </div>
-            """, unsafe_allow_html=True)
-        with col4:
-            avg_exp = round(selected_rows["Years of Experience"].mean(), 1) if len(selected_rows) > 0 else 0.0
-            st.markdown(f"""
-                <div class="kpi-card">
-                    <div class="kpi-value" style="color: #f59e0b;">{avg_exp} yrs</div>
-                    <div class="kpi-label">Avg Lead Seniority</div>
-                </div>
-            """, unsafe_allow_html=True)
+            sources_present = ", ".join(df_state["Data Source"].unique())
+            st.markdown(f'<div class="kpi-card"><div class="kpi-value" style="font-size:1.1rem; padding-top:0.6rem; color: #10b981;">{sources_present}</div><div class="kpi-label">Live Connector</div></div>', unsafe_allow_html=True)
 
         st.write("---")
-
-        # Layout charts side-by-side
-        col_chart_left, col_chart_right = st.columns(2)
-        
-        with col_chart_left:
-            st.markdown("##### Geographic Distribution of Sourced Leads")
-            loc_counts = df_state["Location"].value_counts()
-            st.bar_chart(loc_counts)
-            
-        with col_chart_right:
-            st.markdown("##### Years of Experience Spread")
-            exp_counts = df_state["Years of Experience"].value_counts().sort_index()
-            st.area_chart(exp_counts)
-
-    # ----------------------------------------------------
-    # TAB 3: AI OUTREACH AGENT & COPYWRITER
-    # ----------------------------------------------------
-    with tab_outreach:
-        st.markdown("#### 💌 Deep Outreach Sequence Designer")
-        st.write("Select a lead from your selected cohort and choose from standard sales copy frameworks.")
-        
-        if len(selected_rows) > 0:
-            col_out_left, col_out_right = st.columns([1.5, 2])
-            
-            with col_out_left:
-                st.markdown("##### Step 1: Select Target & Format")
-                selected_lead_name = st.selectbox("Select Target Lead Profile", selected_rows["Full Name"].tolist())
-                lead_row = selected_rows[selected_rows["Full Name"] == selected_lead_name].iloc[0]
-                
-                # Dynamic style architect selection
-                style_choice = st.selectbox(
-                    "Choose Copywriting Framework",
-                    [
-                        "The Direct Meeting Pitch",
-                        "Problem-Agitate-Solve (PAS) Email",
-                        "Casual LinkedIn Connection Request (< 300 characters)",
-                        "Custom Directive Guidance"
-                    ]
-                )
-                
-                # Show custom directive box if chosen
-                custom_instructions = ""
-                if style_choice == "Custom Directive Guidance":
-                    custom_instructions = st.text_area(
-                        "Custom Copy Guidance",
-                        placeholder="e.g., 'Ensure the tone is playful, mention they have amazing skills in Python and request a brief chat.'",
-                        height=100
-                    )
-                
-                # Call AI copy block generator
-                btn_compose = st.button("Generate Tailored Sales Pitch", type="primary", use_container_width=True)
-                
-                st.write("")
-                st.markdown(f"""
-                **Prospect Snapshot:**
-                - **Name**: {lead_row['Full Name']}
-                - **Role**: {lead_row['Job Title']} @ {lead_row['Company']}
-                - **Primary Skills**: {lead_row['Skills']}
-                - **LinkedIn Profile**: [Open Link ↗]({lead_row['LinkedIn URL']})
-                """)
-                
-            with col_out_right:
-                st.markdown("##### Step 2: Generated Outreach Copy")
-                if btn_compose:
-                    with st.spinner("AI compiling personalized sequences..."):
-                        pitch_text = generate_pitch(lead_row, gemini_key, openai_key, style_choice, custom_instructions)
-                        st.text_area("Live Copywriter Output Box", value=pitch_text, height=350)
-                        st.success("✨ Personalization complete! Copy this outreach directly into your sales sequencing platform.")
-                else:
-                    st.write("Click 'Generate Tailored Sales Pitch' to begin rendering personalized outbound text.")
-        else:
-            st.info("Please make sure you have checked/selected at least one lead profile in '📋 Lead Directory' first.")
-
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.markdown("##### Sourced Location Slices")
+            st.bar_chart(df_state["Location"].value_counts())
+        with col_c2:
+            st.markdown("##### Job Title Distribution")
+            st.bar_chart(df_state["Job Title"].value_counts())
 else:
-    # Landing instructional banner
-    st.info("👈 Set your Target Job Title and Target Industry in the control panel at the top to generate your dynamic prospect directory!")
-    
-    col_info_1, col_info_2 = st.columns(2)
-    with col_info_1:
-        st.markdown("""
-            #### 🚀 How It Works:
-            1. **Configure Parameters**: Input target job roles and industries directly inside the main control header.
-            2. **Engage Professional API Key**: Use Gemini or OpenAI to construct context-aware personas, eliminating 503 limit blocks.
-            3. **Procedural Expansion Engine**: Instantly scales up mock records containing custom email domains, locations, and linked handles.
-        """)
-    with col_info_2:
-        st.markdown("""
-            #### 📊 Integrated Tab Workspaces:
-            - **📋 Lead Directory**: Full list of records with adjustable search, experience filters, and checkbox selectors.
-            - **📊 Visual Analytics**: Automated charts mapping experience curves and city-wide spreads.
-            - **💌 AI Outreach Agent**: Draft custom connection sequences in diverse frameworks (PAS, Direct Pitch, or Custom prompts) with easy links to LinkedIn.
-        """)
+    st.info("👈 Feed your search parameters in the main section to query real business networks via SerpAPI.")
